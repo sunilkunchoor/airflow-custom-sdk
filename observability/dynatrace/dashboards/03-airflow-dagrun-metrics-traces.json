@@ -1,0 +1,313 @@
+{
+  "version": 18,
+  "variables": [
+    {
+      "key": "dag_id",
+      "type": "query",
+      "input": "fetch metrics | filter metric.key == \"airflow.ti.start\" | summarize by:{dag_id} | fields dag_id | limit 500",
+      "visible": true,
+      "editable": true,
+      "multiple": false
+    },
+    {
+      "key": "run_id",
+      "type": "query",
+      "input": "fetch spans | filter airflow.dag_id == $dag_id and (isNull(parent.span.id) or matchesValue(span.name, \"dag_run.*\")) | fieldsAdd run_id = coalesce(airflow.dag_run.run_id, airflow.run_id) | summarize by:{run_id} | fields run_id | limit 500",
+      "visible": true,
+      "editable": true,
+      "multiple": false
+    },
+    {
+      "key": "run_start",
+      "type": "query",
+      "input": "fetch spans | filter airflow.dag_id == $dag_id and coalesce(airflow.dag_run.run_id, airflow.run_id) == $run_id and (isNull(parent.span.id) or matchesValue(span.name, \"dag_run.*\")) | fields run_start = start_time | limit 1",
+      "visible": false,
+      "editable": false,
+      "multiple": false
+    },
+    {
+      "key": "run_end",
+      "type": "query",
+      "input": "fetch spans | filter airflow.dag_id == $dag_id and coalesce(airflow.dag_run.run_id, airflow.run_id) == $run_id and (isNull(parent.span.id) or matchesValue(span.name, \"dag_run.*\")) | fieldsAdd run_end = start_time + duration | fields run_end | limit 1",
+      "visible": false,
+      "editable": false,
+      "multiple": false
+    }
+  ],
+  "tiles": {
+    "0": {
+      "type": "markdown",
+      "title": "",
+      "content": "# Airflow Run-Level Drill-Down (Metrics + Traces) — Dynatrace Dashboard\n\nThird companion to `01-airflow-fleet-metrics.json` and `02-airflow-dag-level.json`. Environment: Airflow 3.x, OTLP **metrics + traces** both on (`otel_prefix=\"airflow\"`), hybrid **CeleryExecutor + KubernetesExecutor**, **Edge workers** in use, **OpenLineage** enabled, ~200+ DAGs / high concurrency, Grail/DQL available (built entirely as `fetch metrics` / `timeseries` / `fetch spans` DQL tiles, no classic metric-selector tiles).\n\n**Why this dashboard is split into stages:** `airflow.*` metrics carry `dag_id`/`task_id` but **never `run_id`** — there is no metric-side key to jump straight to \"this specific run.\" Traces (root span `dag_run.{dag_id}`, attributes `airflow.dag_id` + `airflow.dag_run.run_id`/`airflow.run_id`) are the only signal with run-level granularity. So: Section 1 uses metrics to spot *roughly when* something went wrong for a `dag_id`; Section 2 uses traces to resolve the exact `run_id` in that window; Section 3 drills into that one trace; Section 4 cross-references metrics for the same DAG over the run's approximate time window as a best-effort (not guaranteed 1:1) sanity check.\n\n**Variables:** `dag_id` (single-select — this dashboard is meant for one DAG at a time) → `run_id` (single-select, populated from distinct `airflow.dag_run.run_id`/`airflow.run_id` values seen on **trace root spans** for the selected `dag_id`, since it cannot be resolved from metrics) → hidden helper variables `run_start`/`run_end` (populated from the selected run's root span, used to scope Section 4's metrics query to that run's time window — see REVIEW note in Section 4).\n\n**REVIEW — could not confirm from the prompt/spec, verify before relying on this dashboard:**\n- Whether `task_span_detail_level` is enabled (sub-step spans nested under `task_run`) — Section 3 includes a nested-spans tile for this, but it will simply return empty if the feature is off.\n- Whether `dagrun_parent_trace_context` is used to nest Airflow's trace inside an upstream system's trace — if so, this DAG's `dag_run.{dag_id}` span will not be the true trace root (`parent.span.id` will be non-null, pointing to the upstream span), which breaks the `isNull(parent.span.id)` root-detection used throughout this dashboard. The `matchesValue(span.name, \"dag_run.*\")` fallback is included specifically to cover this case, but confirm which detection actually fires on your tenant.\n- Typical concurrent-run count per DAG — if a single `dag_id` regularly has multiple runs in flight, treat Section 4's time-window cross-check as approximate (it is explicitly labeled as such) since it cannot distinguish overlapping runs of the same DAG.\n- Exact field name for the parent-span reference: Dynatrace sources disagree between `parent.span.id` and `span.parent_id`; this dashboard uses `parent.span.id` (matches Dynatrace's own trace/span field-naming convention) — confirm against a live `fetch spans` query on your tenant and adjust every tile below if it differs.\n- Exact attribute key prefix for the task_run-level attributes (`try_number`, `map_index`, `hostname`, `operator`, `pool`, `job_id`, `log_url`, `executor_state`) — the traces spec lists these without consistently repeating the `airflow.` prefix. This dashboard assumes `airflow.try_number`, `airflow.map_index`, etc. (consistent namespacing with `airflow.task_id`/`airflow.dag_id`) — confirm and adjust field names in Section 3 if your exporter emits them unprefixed.",
+      "bounds": {
+        "top": 0,
+        "left": 0,
+        "width": 1516,
+        "height": 430
+      }
+    },
+    "1": {
+      "type": "markdown",
+      "title": "",
+      "content": "## 1. Anomaly Timeline (metrics, filtered by `dag_id`)\n\n> Same underlying signals as `02-airflow-dag-level.json`, purpose-built here to spot *roughly when/where* something went wrong so you can hand off a time range to Section 2. All tiles filtered by `dag_id` only (metrics have no `run_id`).",
+      "bounds": {
+        "top": 434,
+        "left": 0,
+        "width": 1516,
+        "height": 60
+      }
+    },
+    "2": {
+      "type": "data",
+      "title": "DAG run duration — success vs failed (p50/p90/max)",
+      "query": "timeseries successP50=percentile(airflow.dagrun.duration.success,50), successP90=percentile(airflow.dagrun.duration.success,90), successMax=max(airflow.dagrun.duration.success), failedP50=percentile(airflow.dagrun.duration.failed,50), failedP90=percentile(airflow.dagrun.duration.failed,90), failedMax=max(airflow.dagrun.duration.failed), filter: in(dag_id, $dag_id)",
+      "visualization": "lineChart",
+      "visualizationSettings": {},
+      "bounds": {
+        "top": 498,
+        "left": 0,
+        "width": 1516,
+        "height": 304
+      },
+      "subtitle": "Primary \"something changed here\" signal. Click/zoom into the anomalous region, then note the timestamp for Section 2. Timer metric — requires OTLP exponential-histogram support for accurate percentiles."
+    },
+    "3": {
+      "type": "data",
+      "title": "Schedule delay",
+      "query": "timeseries p50=percentile(airflow.dagrun.schedule_delay,50), p90=percentile(airflow.dagrun.schedule_delay,90), filter: in(dag_id, $dag_id)",
+      "visualization": "lineChart",
+      "visualizationSettings": {
+        "thresholds": [
+          {
+            "field": "p90",
+            "rules": [
+              {
+                "color": "orange",
+                "comparator": ">",
+                "value": 300
+              }
+            ]
+          }
+        ]
+      },
+      "bounds": {
+        "top": 806,
+        "left": 0,
+        "width": 756,
+        "height": 304
+      },
+      "subtitle": "Sustained p90 above ~5 min (tune to this DAG's schedule interval) suggests scheduler contention rather than a single bad run."
+    },
+    "4": {
+      "type": "data",
+      "title": "Task failures over time, by task_id (top 20 by failure count)",
+      "query": "timeseries failures=sum(airflow.ti_failures), filter: in(dag_id, $dag_id), by:{task_id} | sort arrayAvg(failures[]) desc | limit 20",
+      "visualization": "lineChart",
+      "visualizationSettings": {},
+      "bounds": {
+        "top": 806,
+        "left": 760,
+        "width": 756,
+        "height": 304
+      },
+      "subtitle": "Which task(s) started failing and when. Top-20-by-failures limit is a cardinality guard at 200+ DAGs; widen if a DAG has more failing tasks than that."
+    },
+    "5": {
+      "type": "markdown",
+      "title": "",
+      "content": "**→ Next step:** note the approximate timestamp (or zoom the dashboard timeframe to the narrow window) where the anomaly above appears, then scroll to **Section 2** below and use that same dashboard timeframe to resolve the exact `run_id`.",
+      "bounds": {
+        "top": 1110,
+        "left": 0,
+        "width": 1516,
+        "height": 60
+      }
+    },
+    "6": {
+      "type": "markdown",
+      "title": "",
+      "content": "## 2. Run Lookup (traces, filtered by `dag_id` + the dashboard timeframe)\n\n> Lists `dag_run.{dag_id}` root spans in the current dashboard timeframe so you can resolve which `run_id` corresponds to the anomaly spotted in Section 1. Narrow the dashboard's global timeframe to the window from Section 1 before reading this table.\n\n**Limitation (flagging rather than guessing):** raw Dynatrace dashboard JSON does not support \"click a table row to set a dashboard variable\" as a built-in tile interaction — the `run_id` variable above is populated by its own query (same root-span filter, distinct `run_id` values) and is selected manually from its dropdown. This table's job is to show you *which* `run_id` to pick (sorted so failed/abnormally-long runs surface first) and to give you the exact value to paste in if it isn't in the dropdown yet (e.g. dropdown result-count cap).",
+      "bounds": {
+        "top": 1174,
+        "left": 0,
+        "width": 1516,
+        "height": 130
+      }
+    },
+    "7": {
+      "type": "data",
+      "title": "Root dag_run spans for this DAG in the current timeframe (failed/abnormal first)",
+      "query": "fetch spans | filter airflow.dag_id == $dag_id and (isNull(parent.span.id) or matchesValue(span.name, \"dag_run.*\")) | fieldsAdd run_id = coalesce(airflow.dag_run.run_id, airflow.run_id) | fieldsAdd duration_s = duration / 1e9 | fieldsAdd outcome = if(status.code == \"STATUS_CODE_ERROR\", \"failed\", else: \"success\") | fields run_id, start_time, duration_s, outcome, trace.id | sort outcome asc, duration_s desc | limit 200",
+      "visualization": "table",
+      "visualizationSettings": {
+        "thresholds": [
+          {
+            "field": "outcome",
+            "rules": [
+              {
+                "color": "red",
+                "comparator": "==",
+                "value": "failed"
+              }
+            ]
+          }
+        ]
+      },
+      "bounds": {
+        "top": 1310,
+        "left": 0,
+        "width": 1516,
+        "height": 360
+      },
+      "subtitle": "REVIEW: root-span detection uses isNull(parent.span.id) with a span.name fallback for setups using dagrun_parent_trace_context (see header note). Sort puts \"failed\" before \"success\" alphabetically, then longest duration first within each group."
+    },
+    "8": {
+      "type": "markdown",
+      "title": "",
+      "content": "## 3. Run Inspector (traces, filtered by `dag_id` + `run_id`)\n\n> Once `run_id` is set above, everything below drills into that one trace: every child `task_run` span in execution order, with duration, offset from run start, status, and the task-level attributes needed to jump to logs or spot retries.",
+      "bounds": {
+        "top": 1674,
+        "left": 0,
+        "width": 1516,
+        "height": 60
+      }
+    },
+    "9": {
+      "type": "data",
+      "title": "Total run duration",
+      "query": "fetch spans | filter airflow.dag_id == $dag_id and coalesce(airflow.dag_run.run_id, airflow.run_id) == $run_id and (isNull(parent.span.id) or matchesValue(span.name, \"dag_run.*\")) | fieldsAdd duration_s = duration / 1e9 | fields duration_s | limit 1",
+      "visualization": "singleValue",
+      "visualizationSettings": {},
+      "bounds": {
+        "top": 1738,
+        "left": 0,
+        "width": 376,
+        "height": 200
+      },
+      "subtitle": "Root dag_run span duration, in seconds."
+    },
+    "10": {
+      "type": "data",
+      "title": "Total task_run span count",
+      "query": "fetch spans | filter airflow.dag_id == $dag_id and coalesce(airflow.dag_run.run_id, airflow.run_id) == $run_id and isNotNull(parent.span.id) | summarize task_span_count = count()",
+      "visualization": "singleValue",
+      "visualizationSettings": {},
+      "bounds": {
+        "top": 1738,
+        "left": 380,
+        "width": 376,
+        "height": 200
+      },
+      "subtitle": "All descendant spans of the run (task_run spans plus any nested sub-step spans, if task_span_detail_level is on)."
+    },
+    "11": {
+      "type": "markdown",
+      "title": "",
+      "content": "**How big was this run** — pair the two stat tiles above with the waterfall table to the right/below: a large task-span count relative to a short total duration usually means high fan-out/parallelism; a long total duration with few task spans usually means a serial critical path or one slow task.",
+      "bounds": {
+        "top": 1738,
+        "left": 760,
+        "width": 756,
+        "height": 200
+      }
+    },
+    "12": {
+      "type": "data",
+      "title": "task_run span waterfall (execution order)",
+      "query": "fetch spans | filter airflow.dag_id == $dag_id and coalesce(airflow.dag_run.run_id, airflow.run_id) == $run_id | lookup [fetch spans | filter airflow.dag_id == $dag_id and coalesce(airflow.dag_run.run_id, airflow.run_id) == $run_id and (isNull(parent.span.id) or matchesValue(span.name, \"dag_run.*\")) | fields root_span_id = span.id, run_start_time = start_time], sourceField: airflow.dag_id, lookupField: airflow.dag_id | filter parent.span.id == root_span_id | fieldsAdd start_offset_s = (start_time - run_start_time) / 1e9 | fieldsAdd duration_s = duration / 1e9 | fieldsAdd outcome = if(status.code == \"STATUS_CODE_ERROR\", \"error\", else: \"ok\") | fieldsAdd is_retry = airflow.try_number > 0 | fields task_id = airflow.task_id, try_number = airflow.try_number, map_index = airflow.map_index, hostname = airflow.hostname, operator = airflow.operator, pool = airflow.pool, job_id = airflow.job_id, log_url = airflow.log_url, executor_state = airflow.executor_state, start_offset_s, duration_s, outcome, is_retry | sort start_offset_s asc | limit 500",
+      "visualization": "table",
+      "visualizationSettings": {
+        "thresholds": [
+          {
+            "field": "outcome",
+            "rules": [
+              {
+                "color": "red",
+                "comparator": "==",
+                "value": "error"
+              }
+            ]
+          },
+          {
+            "field": "is_retry",
+            "rules": [
+              {
+                "color": "orange",
+                "comparator": "==",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "bounds": {
+        "top": 1938,
+        "left": 0,
+        "width": 1516,
+        "height": 400
+      },
+      "subtitle": "Row per direct child span of the root (task_run level). Rows highlighted red are status=error; orange are try_number > 0 (a retry). log_url renders as a link-out to the task's Airflow logs. REVIEW: attribute prefix assumption for try_number/map_index/hostname/operator/pool/job_id/log_url/executor_state — see header note. This dashboard-JSON format does not support an inline collapsible waterfall/Gantt visualization; table sorted by start_offset_s is the closest DQL-tile equivalent — use the Distributed Traces app (linked from the trace.id in Section 2) for a true visual waterfall if your edition includes it."
+    },
+    "13": {
+      "type": "markdown",
+      "title": "",
+      "content": "**Nested sub-step spans** (below) only return rows if `task_span_detail_level` is enabled on this deployment — confirmed as unspecified in this project's setup notes (see header REVIEW). If it's off, this table will simply be empty; that's expected, not a broken query.",
+      "bounds": {
+        "top": 2338,
+        "left": 0,
+        "width": 1516,
+        "height": 60
+      }
+    },
+    "14": {
+      "type": "data",
+      "title": "Nested sub-step spans within each task_run (if task_span_detail_level is enabled)",
+      "query": "fetch spans | filter airflow.dag_id == $dag_id and coalesce(airflow.dag_run.run_id, airflow.run_id) == $run_id and isNotNull(parent.span.id) | lookup [fetch spans | filter airflow.dag_id == $dag_id and coalesce(airflow.dag_run.run_id, airflow.run_id) == $run_id and (isNull(parent.span.id) or matchesValue(span.name, \"dag_run.*\")) | fields root_span_id = span.id], sourceField: airflow.dag_id, lookupField: airflow.dag_id | filter parent.span.id != root_span_id | fieldsAdd duration_s = duration / 1e9 | fieldsAdd outcome = if(status.code == \"STATUS_CODE_ERROR\", \"error\", else: \"ok\") | fields span.name, parent.span.id, task_id = airflow.task_id, duration_s, outcome, start_time | sort start_time asc | limit 500",
+      "visualization": "table",
+      "visualizationSettings": {},
+      "bounds": {
+        "top": 2402,
+        "left": 0,
+        "width": 1516,
+        "height": 304
+      },
+      "subtitle": "Any span whose parent is not the root — i.e. nested under a task_run span. Grouped by the task_id it inherits and parent.span.id so you can see which task_run each sub-step belongs to."
+    },
+    "15": {
+      "type": "markdown",
+      "title": "",
+      "content": "## 4. Cross-Check Against Metrics For the Same Run (best-effort correlation)\n\n> **Metrics cannot be filtered by `run_id`.** This section narrows `airflow.task.*` metrics for this `dag_id` to the exact time window covered by the selected trace (`run_start` → `run_end`, populated from the root span above) as an approximate per-task timing cross-reference against what the trace shows.\n>\n> **This is a time-window approximation, not a guaranteed 1:1 join.** At 200+ DAGs with high concurrency, if this `dag_id` has more than one run in flight during that window, the metrics below reflect *all* overlapping runs of this DAG, not only the selected one — read the trace-based numbers in Section 3 as ground truth for this specific run and use this section only to sanity-check they're in the same ballpark.",
+      "bounds": {
+        "top": 2706,
+        "left": 0,
+        "width": 1516,
+        "height": 140
+      }
+    },
+    "16": {
+      "type": "data",
+      "title": "Task duration / scheduled / queued, by task_id, narrowed to this run's time window",
+      "query": "timeseries p50=percentile(airflow.task.duration,50), p90=percentile(airflow.task.duration,90), schedP90=percentile(airflow.task.scheduled_duration,90), queuedP90=percentile(airflow.task.queued_duration,90), filter: in(dag_id, $dag_id), by:{task_id}, from:$run_start, to:$run_end | sort p90 desc | limit 50",
+      "visualization": "table",
+      "visualizationSettings": {},
+      "bounds": {
+        "top": 2850,
+        "left": 0,
+        "width": 1516,
+        "height": 304
+      },
+      "subtitle": "REVIEW: from:/to: bound to the run_start/run_end helper variables, which hold raw epoch values pulled from the trace's start_time/duration fields. Confirm your DQL version accepts variable-substituted epoch values directly in timeseries from:/to: — if not, read run_start/run_end from Section 3's stat tiles and set the dashboard's global timeframe to that window manually instead. Timer metrics — require OTLP exponential-histogram support for accurate percentiles."
+    },
+    "17": {
+      "type": "markdown",
+      "title": "",
+      "content": "## Setup Notes (verify before trusting this dashboard — not a live tile)\n\n- Confirm `[traces] otel_on = True` is set — this is a **separate config block** from `[metrics] otel_on`; having metrics flowing does not mean traces are.\n- Confirm `otel_host`, `otel_port`, and `otel_ssl_active` under `[traces]` are configured and point at Dynatrace's **trace/span ingest endpoint**, which is not necessarily the same endpoint/port as the metrics OTLP receiver — verify both pipelines independently rather than assuming one implies the other.\n- Confirm the OTLP traces pipeline is actually reaching Dynatrace (a quick `fetch spans | filter airflow.dag_id == \"<any known dag>\" | limit 1` returning rows is the fastest check) before relying on Sections 2–4 of this dashboard.\n- This dashboard assumes Grail/DQL is available on this tenant (confirmed in this project's environment notes) so all trace tiles are built as inline `fetch spans` DQL tiles. If a future tenant/edition doesn't support `fetch spans` in dashboard tiles, substitute Section 2/3's tiles with markdown tiles linking out to the Distributed Traces app, filtered by `dag_id`/`trace.id`, instead.\n- See the dashboard header (top of page) for the full list of unconfirmed attribute names and detection logic (root-span identification, attribute prefixing, `task_span_detail_level`, `dagrun_parent_trace_context`) that should be validated against a live query before this dashboard is treated as production-ready.",
+      "bounds": {
+        "top": 3154,
+        "left": 0,
+        "width": 1516,
+        "height": 220
+      }
+    }
+  }
+}
