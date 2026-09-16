@@ -4,7 +4,7 @@
     {
       "key": "dag_id",
       "type": "query",
-      "input": "fetch metrics | filter metric.key == \"airflow.ti.start\" | summarize by:{dag_id} | fields dag_id | limit 500",
+      "input": "timeseries by:{dag_id}, x=count(airflow.ti.start) | fields dag_id | limit 500",
       "visible": true,
       "editable": true,
       "multiple": true
@@ -12,7 +12,7 @@
     {
       "key": "task_id",
       "type": "query",
-      "input": "fetch metrics | filter metric.key == \"airflow.ti.start\" | summarize by:{task_id} | fields task_id | limit 500",
+      "input": "timeseries by:{task_id}, x=count(airflow.ti.start) | fields task_id | limit 500",
       "visible": true,
       "editable": true,
       "multiple": true
@@ -20,7 +20,7 @@
     {
       "key": "pool_name",
       "type": "query",
-      "input": "fetch metrics | filter metric.key == \"airflow.pool.open_slots\" | summarize by:{pool_name} | fields pool_name | limit 200",
+      "input": "timeseries by:{pool_name}, x=avg(airflow.pool.open_slots) | fields pool_name | limit 200",
       "visible": true,
       "editable": true,
       "multiple": true
@@ -28,7 +28,7 @@
     {
       "key": "executor_class_name",
       "type": "query",
-      "input": "fetch metrics | filter metric.key == \"airflow.executor.running_tasks\" | summarize by:{executor_class_name} | fields executor_class_name | limit 50",
+      "input": "timeseries by:{executor_class_name}, x=avg(airflow.executor.running_tasks) | fields executor_class_name | limit 50",
       "visible": true,
       "editable": true,
       "multiple": true
@@ -36,7 +36,7 @@
     {
       "key": "worker_name",
       "type": "query",
-      "input": "fetch metrics | filter metric.key == \"airflow.edge_worker.status\" | summarize by:{worker_name} | fields worker_name | limit 200",
+      "input": "timeseries by:{worker_name}, x=avg(airflow.edge_worker.status) | fields worker_name | limit 200",
       "visible": true,
       "editable": true,
       "multiple": true
@@ -44,7 +44,7 @@
     {
       "key": "hostname",
       "type": "query",
-      "input": "fetch metrics | filter metric.key == \"airflow.scheduler_heartbeat\" | summarize by:{hostname} | fields hostname | limit 200",
+      "input": "timeseries by:{hostname}, x=count(airflow.scheduler_heartbeat) | fields hostname | limit 200",
       "visible": true,
       "editable": true,
       "multiple": true
@@ -89,23 +89,23 @@
     },
     "3": {
       "type": "data",
-      "title": "Minutes since last scheduler heartbeat",
-      "query": "fetch metrics | filter metric.key == \"airflow.scheduler_heartbeat\" | summarize lastSeen = max(timestamp), by:{hostname} | fieldsAdd minutesAgo = (now() - lastSeen) / 1m",
+      "title": "Scheduler heartbeats in last 5 min",
+      "query": "timeseries value=sum(airflow.scheduler_heartbeat), by:{hostname}, from:-5m",
       "visualization": "singleValue",
       "visualizationSettings": {
         "thresholds": [
           {
-            "field": "minutesAgo",
+            "field": "value",
             "rules": [
               {
                 "color": "red",
-                "comparator": ">",
-                "value": 5
+                "comparator": "<=",
+                "value": 0
               },
               {
                 "color": "green",
-                "comparator": "<=",
-                "value": 5
+                "comparator": ">",
+                "value": 0
               }
             ]
           }
@@ -117,27 +117,27 @@
         "width": 376,
         "height": 304
       },
-      "subtitle": "Alert-worthy: red if no heartbeat in last 5 min (tune N to your scheduler heartbeat interval)."
+      "subtitle": "Alert-worthy: red if zero scheduler heartbeats in the last 5 min (tune window to your heartbeat interval). Rebuilt as a `timeseries` count-in-window check (this tenant doesn't use `fetch metrics`); a raw \"minutes since last heartbeat\" value isn't directly expressible via `timeseries`, which reports aggregated buckets rather than the underlying data-point timestamps."
     },
     "4": {
       "type": "data",
-      "title": "Minutes since last triggerer heartbeat",
-      "query": "fetch metrics | filter metric.key == \"airflow.triggerer_heartbeat\" | summarize lastSeen = max(timestamp), by:{hostname} | fieldsAdd minutesAgo = (now() - lastSeen) / 1m",
+      "title": "Triggerer heartbeats in last 5 min",
+      "query": "timeseries value=sum(airflow.triggerer_heartbeat), by:{hostname}, from:-5m",
       "visualization": "singleValue",
       "visualizationSettings": {
         "thresholds": [
           {
-            "field": "minutesAgo",
+            "field": "value",
             "rules": [
               {
                 "color": "red",
-                "comparator": ">",
-                "value": 5
+                "comparator": "<=",
+                "value": 0
               },
               {
                 "color": "green",
-                "comparator": "<=",
-                "value": 5
+                "comparator": ">",
+                "value": 0
               }
             ]
           }
@@ -148,7 +148,8 @@
         "left": 1140,
         "width": 376,
         "height": 304
-      }
+      },
+      "subtitle": "Alert-worthy: red if zero triggerer heartbeats in the last 5 min (tune window to your heartbeat interval). Rebuilt as a `timeseries` count-in-window check (this tenant doesn't use `fetch metrics`)."
     },
     "5": {
       "type": "data",
